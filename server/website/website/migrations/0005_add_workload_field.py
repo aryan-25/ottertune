@@ -18,9 +18,5 @@ class Migration(migrations.Migration):
             name='project',
             field=models.ForeignKey(default=1, on_delete=django.db.models.deletion.CASCADE, to='website.Project'),
             preserve_default=False,
-        ),
-        migrations.AlterUniqueTogether(
-            name='workload',
-            unique_together=set([('dbms', 'hardware', 'name', 'project')]),
-        ),
+        )
     ]

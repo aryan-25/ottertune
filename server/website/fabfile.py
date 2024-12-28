@@ -14,10 +14,24 @@ from collections import namedtuple
 from fabric.api import env, local, quiet, settings, task
 from fabric.state import output as fabric_output
 
-from website.settings import DATABASES, PROJECT_ROOT
+from os.path import abspath, dirname
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.mysql',
+        'NAME': 'ottertune',
+        'USER': 'azureuser',
+        'PASSWORD': '',
+        'HOST': 'localhost',
+        'PORT': '',
+        'OPTIONS': {
+            'init_command': "SET sql_mode='STRICT_TRANS_TABLES',innodb_strict_mode=1",
+        },
+    }
+}
+PROJECT_ROOT = dirname(dirname(dirname(abspath(__file__))))
 
 LOG = logging.getLogger(__name__)
-
 
 # Fabric environment settings
 env.hosts = ['localhost']
@@ -109,10 +123,10 @@ def reset_website():
     user = DATABASES['default']['USER']
     passwd = DATABASES['default']['PASSWORD']
     name = DATABASES['default']['NAME']
-    local("mysql -u {} -p{} -N -B -e \"DROP DATABASE IF EXISTS {}\"".format(
-        user, passwd, name))
-    local("mysql -u {} -p{} -N -B -e \"CREATE DATABASE {}\"".format(
-        user, passwd, name))
+    local("mysql -u {} -N -B -e \"DROP DATABASE IF EXISTS {}\"".format(
+        user, name))
+    local("mysql -u {} -N -B -e \"CREATE DATABASE {}\"".format(
+        user, name))
 
     # Reinitialize the website
     local('python manage.py migrate website')
