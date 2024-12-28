@@ -15,6 +15,9 @@ import re
 import time
 from collections import OrderedDict
 from multiprocessing import Process
+import paramiko
+from scp import SCPClient
+import sys
 
 import logging
 from logging.handlers import RotatingFileHandler
@@ -64,7 +67,7 @@ def check_disk_usage():
     disk_use = 0
     if partition:
         cmd = "df -h {}".format(partition)
-        out = run(cmd).splitlines()[1]
+        out = updated_sudo(cmd).splitlines()[1]
         m = re.search(r'\d+(?=%)', out)
         if m:
             disk_use = int(m.group(0))
@@ -74,13 +77,13 @@ def check_disk_usage():
 
 @task
 def check_memory_usage():
-    run('free -m -h')
+    updated_sudo('free -m -h')
 
 
-@task
+# @task
 def create_controller_config():
     if dconf.DB_TYPE == 'postgres':
-        dburl_fmt = 'jdbc:postgresql://{host}:{port}/{db}'.format
+        dburl_fmt = 'jdbc:postgresql://172.236.3.134:{port}/{db}'.format
     elif dconf.DB_TYPE == 'oracle':
         dburl_fmt = 'jdbc:oracle:thin:@{host}:{port}:{db}'.format
     elif dconf.DB_TYPE == 'mysql':
@@ -117,15 +120,15 @@ def restart_database():
             # in the container is postgres itself
             local('docker restart {}'.format(dconf.CONTAINER_NAME))
         elif dconf.HOST_CONN == 'remote_docker':
-            run('docker restart {}'.format(dconf.CONTAINER_NAME), remote_only=True)
+            updated_sudo('docker restart {}'.format(dconf.CONTAINER_NAME), remote_only=True)
         else:
-            sudo('pg_ctl -D {} -w -t 600 restart -m fast'.format(
-                dconf.PG_DATADIR), user=dconf.ADMIN_USER, capture=False)
+            updated_sudo('sudo systemctl restart postgresql@9.6-main')
+            # sudo('systemctl restart postgresql@16-main', user=dconf.ADMIN_USER, capture=False)
     elif dconf.DB_TYPE == 'mysql':
         if dconf.HOST_CONN == 'docker':
             local('docker restart {}'.format(dconf.CONTAINER_NAME))
         elif dconf.HOST_CONN == 'remote_docker':
-            run('docker restart {}'.format(dconf.CONTAINER_NAME), remote_only=True)
+            updated_sudo('docker restart {}'.format(dconf.CONTAINER_NAME), remote_only=True)
         else:
             sudo('service mysql restart')
     elif dconf.DB_TYPE == 'oracle':
@@ -151,7 +154,7 @@ def restart_database():
 @task
 def drop_database():
     if dconf.DB_TYPE == 'postgres':
-        run("PGPASSWORD={} dropdb -e --if-exists {} -U {} -h {}".format(
+        updated_sudo("PGPASSWORD={} dropdb -e --if-exists {} -U {} -h {}".format(
             dconf.DB_PASSWORD, dconf.DB_NAME, dconf.DB_USER, dconf.DB_HOST))
     elif dconf.DB_TYPE == 'mysql':
         run("mysql --user={} --password={} -e 'drop database if exists {}'".format(
@@ -163,7 +166,7 @@ def drop_database():
 @task
 def create_database():
     if dconf.DB_TYPE == 'postgres':
-        run("PGPASSWORD={} createdb -e {} -U {} -h {}".format(
+        updated_sudo("PGPASSWORD={} createdb -e {} -U {} -h {}".format(
             dconf.DB_PASSWORD, dconf.DB_NAME, dconf.DB_USER, dconf.DB_HOST))
     elif dconf.DB_TYPE == 'mysql':
         run("mysql --user={} --password={} -e 'create database {}'".format(
@@ -176,7 +179,7 @@ def create_database():
 def create_user():
     if dconf.DB_TYPE == 'postgres':
         sql = "CREATE USER {} SUPERUSER PASSWORD '{}';".format(dconf.DB_USER, dconf.DB_PASSWORD)
-        run("PGPASSWORD={} psql -c \\\"{}\\\" -U postgres -h {}".format(
+        updated_sudo("PGPASSWORD={} psql -c \\\"{}\\\" -U postgres -h {}".format(
             dconf.DB_PASSWORD, sql, dconf.DB_HOST))
     elif dconf.DB_TYPE == 'oracle':
         run_sql_script('createUser.sh', dconf.DB_USER, dconf.DB_PASSWORD)
@@ -188,7 +191,7 @@ def create_user():
 def drop_user():
     if dconf.DB_TYPE == 'postgres':
         sql = "DROP USER IF EXISTS {};".format(dconf.DB_USER)
-        run("PGPASSWORD={} psql -c \\\"{}\\\" -U postgres -h {}".format(
+        updated_sudo("PGPASSWORD={} psql -c \\\"{}\\\" -U postgres -h {}".format(
             dconf.DB_PASSWORD, sql, dconf.DB_HOST))
     elif dconf.DB_TYPE == 'oracle':
         run_sql_script('dropUser.sh', dconf.DB_USER)
@@ -211,13 +214,53 @@ def reset_conf(always=True):
     if signal not in lines:
         change_conf()
 
+
+def updated_get(remote_location, local_location):
+    ssh_client = paramiko.SSHClient()
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh_client.connect(hostname='172.236.3.134', port=22, username='root', password=dconf.LOGIN_PASSWORD)
+    print(f'Fetching from 172.236.3.134:{remote_location} to {local_location}')
+
+    with SCPClient(ssh_client.get_transport()) as scp:
+        scp.get(remote_location, local_location)
+        print(f'File downloaded successfully from 172.236.3.134:{remote_location} to {local_location}')
+
+
+def updated_put(local_location, remote_location):
+    ssh_client = paramiko.SSHClient()
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh_client.connect(hostname='172.236.3.134', port=22, username='root', password=dconf.LOGIN_PASSWORD)
+
+    with SCPClient(ssh_client.get_transport()) as scp:
+        scp.put(local_location, remote_location)
+        print(f'File uploaded successfully from {local_location} to {remote_location}')
+
+
+def updated_sudo(cmd):
+    ssh_client = paramiko.SSHClient()
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh_client.connect(hostname='172.236.3.134', port=22, username='root', password=dconf.LOGIN_PASSWORD)
+
+    _, stdout, stderr = ssh_client.exec_command(cmd)
+
+    for line in stdout:
+        print(line.strip('\n'))
+
+    for err in stderr:
+        print(err.strip('\n'), file=sys.stderr)
+
+    ssh_client.close()
+
+    pass
+
+
 @task
 def change_conf(next_conf=None):
     signal = "# configurations recommended by ottertune:\n"
     next_conf = next_conf or {}
 
     tmp_conf_in = os.path.join(dconf.TEMP_DIR, os.path.basename(dconf.DB_CONF) + '.in')
-    get(dconf.DB_CONF, tmp_conf_in)
+    updated_get(dconf.DB_CONF, tmp_conf_in)
     with open(tmp_conf_in, 'r') as f:
         lines = f.readlines()
 
@@ -262,8 +305,8 @@ def change_conf(next_conf=None):
     with open(tmp_conf_out, 'w') as f:
         f.write(''.join(lines))
 
-    sudo('cp {0} {0}.ottertune.bak'.format(dconf.DB_CONF), remote_only=True)
-    put(tmp_conf_out, dconf.DB_CONF, use_sudo=True)
+    updated_sudo('cp {0} {0}.ottertune.bak'.format(dconf.DB_CONF))
+    updated_put(tmp_conf_out, dconf.DB_CONF)
     local('rm -f {} {}'.format(tmp_conf_in, tmp_conf_out))
 
 
@@ -274,8 +317,7 @@ def load_oltpbench():
         msg += 'please double check the option in driver_config.py'
         raise Exception(msg)
     set_oltpbench_config()
-    cmd = "./oltpbenchmark -b {} -c {} --create=true --load=true".\
-          format(dconf.OLTPBENCH_BENCH, dconf.OLTPBENCH_CONFIG)
+    cmd = "cd ../../benchbase/target/benchbase-postgres/ &&  -c /benchbase/results/tpcc_config_postgres.xml -b tpcc --create=true --load=true"
     with lcd(dconf.OLTPBENCH_HOME):  # pylint: disable=not-context-manager
         local(cmd)
 
@@ -287,8 +329,7 @@ def run_oltpbench():
         msg += 'please double check the option in driver_config.py'
         raise Exception(msg)
     set_oltpbench_config()
-    cmd = "./oltpbenchmark -b {} -c {} --execute=true -s 5 -o outputfile".\
-          format(dconf.OLTPBENCH_BENCH, dconf.OLTPBENCH_CONFIG)
+    cmd = "cd ../../benchbase/target/benchbase-postgres/ && jnava -jar benchbase.jar -b tpcc -c /Users/aryanshah/Developer/ottertune/ottertune/client/driver/tpcc_config_postgres.xml --execute=true -s 5"
     with lcd(dconf.OLTPBENCH_HOME):  # pylint: disable=not-context-manager
         local(cmd)
 
@@ -301,19 +342,9 @@ def run_oltpbench_bg():
         raise Exception(msg)
     # set oltpbench config, including db username, password, url
     set_oltpbench_config()
-    cmd = "./oltpbenchmark -b {} -c {} --execute=true -s 5 -o outputfile > {} 2>&1 &".\
-          format(dconf.OLTPBENCH_BENCH, dconf.OLTPBENCH_CONFIG, dconf.OLTPBENCH_LOG)
+    cmd = "cd ../../benchbase/target/benchbase-postgres/ && java -jar benchbase.jar -b tpcc -c /Users/aryanshah/Developer/ottertune/ottertune/client/driver/tpcc_config_postgres.xml --execute=true -s 5 > {} 2>&1 &".format(
+        dconf.OLTPBENCH_LOG)
     with lcd(dconf.OLTPBENCH_HOME):  # pylint: disable=not-context-manager
-        local(cmd)
-
-
-@task
-def run_controller(interval_sec=-1):
-    LOG.info('Controller config path: %s', dconf.CONTROLLER_CONFIG)
-    create_controller_config()
-    cmd = 'gradle run -PappArgs="-c {} -t {} -d output/" --no-daemon > {}'.\
-          format(dconf.CONTROLLER_CONFIG, interval_sec, dconf.CONTROLLER_LOG)
-    with lcd(dconf.CONTROLLER_HOME):  # pylint: disable=not-context-manager
         local(cmd)
 
 
@@ -353,11 +384,11 @@ def save_next_config(next_config, t=None):
 def free_cache():
     if dconf.HOST_CONN not in ['docker', 'remote_docker']:
         with show('everything'), settings(warn_only=True):  # pylint: disable=not-context-manager
-            res = sudo("sh -c \"echo 3 > /proc/sys/vm/drop_caches\"")
-            if res.failed:
-                LOG.error('%s (return code %s)', res.stderr.strip(), res.return_code)
+            res = updated_sudo("sh -c \"echo 3 > /proc/sys/vm/drop_caches\"")
+            # if res.failed:
+            # LOG.error('%s (return code %s)', res.stderr.strip(), res.return_code)
     else:
-        res = sudo("sh -c \"echo 3 > /proc/sys/vm/drop_caches\"", remote_only=True)
+        res = updated_sudo("sh -c \"echo 3 > /proc/sys/vm/drop_caches\"")
 
 
 @task
@@ -536,7 +567,7 @@ def dump_database():
                            dconf.DB_NAME, dconf.DB_DUMP_DIR)
 
     elif dconf.DB_TYPE == 'postgres':
-        run('PGPASSWORD={} pg_dump -U {} -h {} -F c -d {} > {}'.format(
+        updated_sudo('PGPASSWORD={} pg_dump --verbose -U {} -h {} -F c -d {} > {}'.format(
             dconf.DB_PASSWORD, dconf.DB_USER, dconf.DB_HOST, dconf.DB_NAME,
             dumpfile))
     elif dconf.DB_TYPE == 'mysql':
@@ -551,7 +582,7 @@ def dump_database():
 def clean_recovery():
     run_sql_script('removeRestore.sh', dconf.RESTORE_POINT)
     cmds = ("""rman TARGET / <<EOF\nDELETE ARCHIVELOG ALL;\nexit\nEOF""")
-    run(cmds)
+    updated_sudo(cmds)
 
 
 @task
@@ -572,7 +603,7 @@ def restore_database():
     elif dconf.DB_TYPE == 'postgres':
         drop_database()
         create_database()
-        run('PGPASSWORD={} pg_restore -U {} -h {} -n public -j 8 -F c -d {} {}'.format(
+        updated_sudo('PGPASSWORD={} pg_restore --verbose -j 4 -U {} -h {} -n public -F c -d {} {}'.format(
             dconf.DB_PASSWORD, dconf.DB_USER, dconf.DB_HOST, dconf.DB_NAME, dumpfile))
     elif dconf.DB_TYPE == 'mysql':
         run('mysql --user={} --password={} < {}'.format(dconf.DB_USER, dconf.DB_PASSWORD, dumpfile))
@@ -630,7 +661,7 @@ def _ready_to_shut_down_controller():
             error_msg = m.group(0)
             LOG.error('OLTPBench Failed!')
             return True, error_msg
-        ready = 'Output throughput samples into file' in content
+        ready = 'Output samples into file' in content
     return ready, None
 
 
@@ -661,7 +692,7 @@ def _set_oltpbench_property(name, line):
     elif name == 'DBUrl':
         ss = line.split('DBUrl')
         if dconf.DB_TYPE == 'postgres':
-            dburl_fmt = 'jdbc:postgresql://{host}:{port}/{db}'.format
+            dburl_fmt = 'jdbc:postgresql://172.236.3.134:{port}/{db}'.format
         elif dconf.DB_TYPE == 'oracle':
             dburl_fmt = 'jdbc:oracle:thin:@{host}:{port}:{db}'.format
         elif dconf.DB_TYPE == 'mysql':
@@ -736,8 +767,9 @@ def loop(i):
     if check_disk_usage() > dconf.MAX_DISK_USAGE:
         LOG.warning('Exceeds max disk usage %s', dconf.MAX_DISK_USAGE)
 
+    cmd = "cd ../controller && gradle run -PappArgs='-c ./config/postgres_config.json -t -1 -d ./output/' --no-daemon > ../driver/log/controller.log"
     # run controller from another process
-    p = Process(target=run_controller, args=())
+    p = Process(target=local, args=(cmd,))
     p.start()
     LOG.info('Run the controller')
 
@@ -825,7 +857,7 @@ def set_dynamic_knobs(recommendation, context):
 @task
 def run_loops(max_iter=10):
     # dump database if it's not done before.
-    dump = dump_database()
+    # dump = dump_database()
     # put the BASE_DB_CONF in the config file
     # e.g., mysql needs to set innodb_monitor_enable to track innodb metrics
     reset_conf(False)
@@ -847,19 +879,19 @@ def run_loops(max_iter=10):
             change_conf(response['recommendation'])
             continue
 
-        # reload database periodically
-        if dconf.RELOAD_INTERVAL > 0:
-            if i % dconf.RELOAD_INTERVAL == 0:
-                is_ready_db(interval_sec=10)
-                if i == 0 and dump is False:
-                    restore_database()
-                elif i > 0:
-                    restore_database()
-        LOG.info('Wait %s seconds after restarting database', dconf.RESTART_SLEEP_SEC)
-        is_ready_db(interval_sec=10)
-        LOG.info('The %s-th Loop Starts / Total Loops %s', i + 1, max_iter)
+        # # reload database periodically
+        # if dconf.RELOAD_INTERVAL > 0:
+        #     if i % dconf.RELOAD_INTERVAL == 0:
+        #         is_ready_db(interval_sec=10)
+        #         if i == 0 and dump is False:
+        #             restore_database()
+        #         elif i > 0:
+        #             restore_database()
+        # LOG.info('Wait %s seconds after restarting database', dconf.RESTART_SLEEP_SEC)
+        # is_ready_db(interval_sec=10)
+        # LOG.info('The %s-th Loop Starts / Total Loops %s', i + 1, max_iter)
         loop(i % dconf.RELOAD_INTERVAL if dconf.RELOAD_INTERVAL > 0 else i)
-        LOG.info('The %s-th Loop Ends / Total Loops %s', i + 1, max_iter)
+        # LOG.info('The %s-th Loop Ends / Total Loops %s', i + 1, max_iter)
 
 
 @task
@@ -868,7 +900,6 @@ def monitor(max_iter=1):
     for i in range(int(max_iter)):
         LOG.info('The %s-th Monitor Loop Starts / Total Loops %s', i + 1, max_iter)
         clean_controller_results()
-        run_controller(interval_sec=dconf.CONTROLLER_OBSERVE_SEC)
         upload_result()
         LOG.info('The %s-th Monitor Loop Ends / Total Loops %s', i + 1, max_iter)
 
@@ -883,7 +914,6 @@ def monitor_tune(max_iter=1):
     for i in range(int(max_iter)):
         LOG.info('The %s-th Monitor Loop (with Tuning) Starts / Total Loops %s', i + 1, max_iter)
         clean_controller_results()
-        run_controller(interval_sec=dconf.CONTROLLER_OBSERVE_SEC)
         upload_result()
         response = get_result()
         set_dynamic_knobs(response['recommendation'], response['context'])

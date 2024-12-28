@@ -6,16 +6,16 @@ import os
 
 # Location of the database host relative to this driver
 # Valid values: local, remote, docker or remote_docker
-HOST_CONN = 'local'
+HOST_CONN = 'remote'
 
 # The name of the Docker container for the target database
 # (only required if HOST_CONN = docker)
 CONTAINER_NAME = None  # e.g., 'postgres_container'
 
 # Host SSH login credentials (only required if HOST_CONN=remote)
-LOGIN_NAME = None
-LOGIN_HOST = None
-LOGIN_PASSWORD = None
+LOGIN_NAME = 'root'
+LOGIN_HOST = '172.236.3.134'
+LOGIN_PASSWORD = os.environ.get('LOGIN_PASSWORD', 'root')
 LOGIN_PORT = None  # Set when using a port other than the SSH default
 
 
@@ -33,10 +33,10 @@ DB_VERSION = '9.6'
 DB_NAME = 'tpcc'
 
 # Database username
-DB_USER = 'dbuser'
+DB_USER = 'tpcc'
 
 # Password for DB_USER
-DB_PASSWORD = 'dbpassword'
+DB_PASSWORD = 'tpcc'
 
 # Database admin username (for tasks like restarting the database)
 ADMIN_USER = DB_USER
@@ -110,7 +110,7 @@ ENABLE_UDM = False
 UDM_DIR = os.path.join(DRIVER_HOME, 'userDefinedMetrics')
 
 # Path to temp directory
-TEMP_DIR = '/tmp/driver'
+TEMP_DIR = './tmp/'
 
 # Path to the directory for storing database dump files
 if DB_DUMP_DIR is None:
@@ -119,7 +119,7 @@ if DB_DUMP_DIR is None:
         if not os.path.exists(DB_DUMP_DIR):
             os.mkdir(DB_DUMP_DIR)
     else:
-        DB_DUMP_DIR = os.path.expanduser('~/')
+        DB_DUMP_DIR = os.path.abspath('/home/root/')
 
 # Reload the database after running this many iterations
 RELOAD_INTERVAL = 10
@@ -140,10 +140,10 @@ RESTART_SLEEP_SEC = 30
 #==========================================================
 
 # Path to OLTPBench directory
-OLTPBENCH_HOME = os.path.expanduser('~/oltpbench')
+OLTPBENCH_HOME = os.path.expanduser('.')
 
 # Path to the OLTPBench configuration file
-OLTPBENCH_CONFIG = os.path.join(OLTPBENCH_HOME, 'config/tpcc_config_postgres.xml')
+OLTPBENCH_CONFIG = os.path.join(OLTPBENCH_HOME, "tpcc_config_postgres.xml")
 
 # Name of the benchmark to run
 OLTPBENCH_BENCH = 'tpcc'
@@ -187,4 +187,4 @@ CONTROLLER_LOG = os.path.join(LOG_DIR, 'controller.log')
 WEBSITE_URL = 'http://127.0.0.1:8000'
 
 # Code for uploading new results to the website
-UPLOAD_CODE = 'I5I10PXK3PK27FM86YYS'
+UPLOAD_CODE = '7N1L48941EKEPD9UXX0W'
