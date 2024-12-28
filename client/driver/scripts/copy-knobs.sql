@@ -1,0 +1,1 @@
+UPDATE website_sessionknob AS target JOIN website_sessionknob AS source ON target.knob_id = source.knob_id SET target.minval = source.minval, target.maxval = source.maxval, target.lowerbound = source.lowerbound, target.upperbound = source.upperbound, target.tunable = source.tunable WHERE target.session_id = 24 AND source.session_id = 23;

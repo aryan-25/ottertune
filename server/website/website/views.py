@@ -943,16 +943,41 @@ def dbms_data_view(request, context, dbms_data, session, target_obj):
     data_type = context['data_type']
     dbms_id = session.dbms.pk
 
+    def convert_to_gb(size_str):
+        size_str = size_str.strip().lower()
+        unit_multipliers = {
+            'b': 1 / (1024 ** 3),
+            'kb': 1 / (1024 ** 2),
+            'mb': 1 / 1024,
+            'gb': 1,
+            'tb': 1024,
+            'pb': 1024 ** 2
+        }
+        
+        import re
+        match = re.match(r'([\d\.]+)([a-z]+)', size_str)
+        if not match:
+            return size_str
+        
+        value, unit = match.groups()
+        value = float(value)
+        
+        if unit not in unit_multipliers:
+            raise ValueError(f"Unknown unit '{unit}' in size '{size_str}'")
+        
+        return str((value * unit_multipliers[unit]).__format__('.3f')) + ' GB'
+
     def _format_knobs(_dict):
-        if data_type == 'knobs' and session.dbms.type in (DBMSType.ORACLE,):
+        if data_type == 'knobs' and session.dbms.type in (DBMSType.ORACLE, DBMSType.POSTGRES):
             _knob_meta = KnobCatalog.objects.filter(
                 dbms_id=dbms_id, unit=KnobUnitType.BYTES)
             _parser = parser._get(dbms_id)  # pylint: disable=protected-access
             for _meta in _knob_meta:
                 if _meta.name in _dict:
                     try:
-                        _v = int(_dict[_meta.name])
-                        _v = _parser.format_integer(_v, _meta)
+                        _v = _dict[_meta.name]
+                        # _v = _parser.format_integer(_v, _meta)
+                        _v = convert_to_gb(str(_v))
                     except (ValueError, TypeError):
                         LOG.warning("Error parsing knob %s=%s.", _meta.name,
                                     _v, exc_info=True)
