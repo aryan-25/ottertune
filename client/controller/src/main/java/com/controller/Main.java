@@ -56,6 +56,8 @@ public class Main {
   private static boolean keepRunning = true;
   private static boolean firstCollecting = false;
 
+  private static int id = 1;
+
   @SuppressWarnings("restriction")
   public static void main(String[] args) {
 
@@ -73,8 +75,8 @@ public class Main {
     Options options = new Options();
     options.addOption("c", "config", true, "[required] Controller configuration file");
     options.addOption("t", "time", true, "The observation time in seconds, default is 300s");
-    options.addOption(
-        "d", "directory", true, "Base directory for the result files, default is 'output'");
+    options.addOption("d","directory", true, "Base directory for the result files, default is 'output'");
+    options.addOption("i", "id", true, "A unique identifier of this invocation if multiple instances of the controller are running. Default is 1.");
     options.addOption("h", "help", true, "Print this help");
     String configFilePath = null;
 
@@ -110,6 +112,11 @@ public class Main {
     LOG.info("Experiment output directory is set to: " + outputDirectory);
     FileUtil.makeDirIfNotExists(outputDirectory);
 
+    if (argsLine.hasOption("i")) {
+      id = Integer.parseInt(argsLine.getOptionValue("i"));
+    }
+    LOG.info("Experiment id is set to: " + id);
+
     // Parse controller configuration file
     String configPath = argsLine.getOptionValue("c");
     File configFile = new File(configPath);
@@ -138,13 +145,15 @@ public class Main {
     }
 
     DBCollector collector = getCollector(config);
-    File f = new File("pid.txt");
+
+    String pidFileName = id + "_pid.txt";
+    File f = new File(pidFileName);
     try {
       // get pid of this process and write the pid to a file before recording the start time
       if (time < 0) {
         // add a signal handler
         Signal.handle(new Signal("INT"), signal -> firstCollecting = true);
-        
+
         String vmName = ManagementFactory.getRuntimeMXBean().getName();
         int p = vmName.indexOf("@");
         int pid = Integer.valueOf(vmName.substring(0, p));
@@ -161,7 +170,7 @@ public class Main {
       else {
         firstCollecting = true;
       }
-      LOG.info("Output the process pid to pid.txt");
+      LOG.info("Output the process pid to " + pidFileName);
 
       while (!firstCollecting) {
         Thread.sleep(1);
@@ -248,20 +257,6 @@ public class Main {
     } catch (FileNotFoundException | UnsupportedEncodingException | InterruptedException e) {
       LOG.error("Failed to produce output files");
       e.printStackTrace();
-    }
-    if (config.getUploadURL() != null && !config.getUploadURL().equals("")) {
-      Map<String, String> outfiles = new HashMap<>();
-      outfiles.put("knobs", FileUtil.joinPath(outputDirectory, "knobs.json"));
-      outfiles.put("metrics_before", FileUtil.joinPath(outputDirectory, "metrics_before.json"));
-      outfiles.put("metrics_after", FileUtil.joinPath(outputDirectory, "metrics_after.json"));
-      outfiles.put("summary", FileUtil.joinPath(outputDirectory, "summary.json"));
-      try {
-        ResultUploader.upload(config.getUploadURL(), config.getUploadCode(), outfiles);
-      } catch (IOException ioe) {
-        LOG.warn("Failed to upload results from the controller");
-      }
-    } else {
-      LOG.warn("Empty upload URL. Skipping upload...");
     }
   }
 
