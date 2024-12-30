@@ -66,7 +66,7 @@ urlpatterns = [
     url(r'^static/(?P<path>.*)$', never_cache(serve)),
 
     # Back door
-    url(r'^query_and_get/(?P<upload_code>[0-9a-zA-Z]+)$', website_views.give_result, name="backdoor"),
+    url(r'^query_and_get/(?P<upload_code>[0-9a-zA-Z]+)/(?P<result_id>[0-9]+)$', website_views.give_result, name="backdoor"),
     url(r'^dump/(?P<upload_code>[0-9a-zA-Z]+)', website_views.get_debug_info, name="backdoor_debug"),
     url(r'^create/project/', website_views.alt_create_or_edit_project, name='backdoor_create_project'),
     url(r'^edit/project/', website_views.alt_create_or_edit_project, name='backdoor_edit_project'),

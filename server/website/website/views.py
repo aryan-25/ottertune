@@ -1367,7 +1367,7 @@ def get_timeline_data(request):
 
 
 # get the lastest result
-def give_result(request, upload_code):  # pylint: disable=unused-argument
+def give_result(request, upload_code, result_id):  # pylint: disable=unused-argument
     try:
         session = Session.objects.get(upload_code=upload_code)
     except Session.DoesNotExist:
@@ -1380,7 +1380,7 @@ def give_result(request, upload_code):  # pylint: disable=unused-argument
         LOG.warning(err_msg)
         return HttpResponse(err_msg, status=404)
 
-    latest_result = Result.objects.filter(session=session).latest('creation_time')
+    latest_result = Result.objects.filter(session=session, id=int(result_id)).latest('creation_time')
     task_tuple = JSONUtil.loads(latest_result.task_ids)
     task_res = celery.result.result_from_tuple(task_tuple)
 
@@ -1411,7 +1411,7 @@ def give_result(request, upload_code):  # pylint: disable=unused-argument
 
     elif group_res.ready():
         assert group_res.successful()
-        latest_result = Result.objects.filter(session=session).latest('creation_time')
+        latest_result = Result.objects.filter(session=session, id=int(result_id)).latest('creation_time')
         next_config = JSONUtil.loads(latest_result.next_configuration)
         response.update(
             next_config, celery_status='SUCCESS',
