@@ -102,3 +102,4 @@ out/
 # Text editor configs #
 #######################
 .vimrc
+*.dump

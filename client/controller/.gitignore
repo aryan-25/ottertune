@@ -20,6 +20,7 @@ bin/
 build/
 out/
 output/
+*_output/
 
 # lib
 lib/
@@ -30,5 +31,5 @@ lib/
 # controller configuration files
 config/*
 !config/sample_*_config.json
-*.pid
+*_pid.txt
 
