@@ -14,6 +14,7 @@ import socket
 import time
 from collections import OrderedDict
 from io import StringIO
+import ast
 
 import celery
 from celery import chain, signature, uuid
@@ -802,30 +803,47 @@ def handle_result_files(session, files, execution_times=None):
     session.project.save()
     session.save()
 
+    result_id = result.pk
+
     if session.tuning_session == 'no_tuning_session':
         return HttpResponse("Result stored successfully!")
 
-    celery_status = 'celery status is unknown'
+    return HttpResponse("Result stored successfully! Result ID:{}".format(result_id))
+
+
+@csrf_exempt
+def process_result(request):
+    data = { k: v[0] for k, v in request.POST.lists() }
+    upload_code = data["upload_code"]
+    result_ids = ast.literal_eval(data["result_ids"])
+
+    session = Session.objects.get(upload_code=upload_code)
+
+    latest_result_id = max(result_ids)
+    num_configs = len(result_ids)
+
+    print(f"The latest result ID = {latest_result_id} and the number of configs to generate = {num_configs}")
+
     if CHECK_CELERY:
-        celery_status = utils.check_and_run_celery()
-    result_id = result.pk
+        utils.check_and_run_celery()
+
     response = None
     if session.algorithm == AlgorithmType.GPR:
         subtask_list = [
-            ('preprocessing', (result_id, session.algorithm)),
+            ('preprocessing', (latest_result_id, session.algorithm, num_configs)),
             ('aggregate_target_results', ()),
             ('map_workload', ()),
             ('configuration_recommendation', ()),
         ]
     elif session.algorithm == AlgorithmType.DDPG:
         subtask_list = [
-            ('preprocessing', (result_id, session.algorithm)),
+            ('preprocessing', (latest_result_id, session.algorithm, num_configs)),
             ('train_ddpg', ()),
             ('configuration_recommendation_ddpg', ()),
         ]
     elif session.algorithm == AlgorithmType.DNN:
         subtask_list = [
-            ('preprocessing', (result_id, session.algorithm)),
+            ('preprocessing', (latest_result_id, session.algorithm, num_configs)),
             ('aggregate_target_results', ()),
             ('map_workload', ()),
             ('configuration_recommendation', ()),
@@ -838,11 +856,12 @@ def handle_result_files(session, files, execution_times=None):
         subtasks.append(s)
 
     response = chain(*subtasks).apply_async()
-    result.task_ids = JSONUtil.dumps(response.as_tuple())
-    result.save()
+    for id in result_ids:
+        result = Result.objects.get(pk=id)
+        result.task_ids = JSONUtil.dumps(response.as_tuple())
+        result.save()
 
-    return HttpResponse("Result stored successfully! Running tuner...({}, status={}) Result ID:{}"
-                        .format(celery_status, response.status, result_id))
+    return HttpResponse("Processing results")
 
 
 @login_required(login_url=reverse_lazy('login'))
@@ -1413,9 +1432,11 @@ def give_result(request, upload_code, result_id):  # pylint: disable=unused-argu
         assert group_res.successful()
         latest_result = Result.objects.filter(session=session, id=int(result_id)).latest('creation_time')
         next_config = JSONUtil.loads(latest_result.next_configuration)
-        response.update(
-            next_config, celery_status='SUCCESS',
+        print(f"The next_config is {next_config}")
+        print(f"The response is {response}")
+        response.update(celery_status='SUCCESS',
             message='Celery successfully recommended the next configuration')
+        response['next_config'] = next_config
         status_code = 200
 
     else:  # One or more tasks are still waiting to execute

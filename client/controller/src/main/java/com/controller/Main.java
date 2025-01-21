@@ -249,20 +249,7 @@ public class Main {
       LOG.error("Failed to produce output files");
       e.printStackTrace();
     }
-    if (config.getUploadURL() != null && !config.getUploadURL().equals("")) {
-      Map<String, String> outfiles = new HashMap<>();
-      outfiles.put("knobs", FileUtil.joinPath(outputDirectory, "knobs.json"));
-      outfiles.put("metrics_before", FileUtil.joinPath(outputDirectory, "metrics_before.json"));
-      outfiles.put("metrics_after", FileUtil.joinPath(outputDirectory, "metrics_after.json"));
-      outfiles.put("summary", FileUtil.joinPath(outputDirectory, "summary.json"));
-      try {
-        ResultUploader.upload(config.getUploadURL(), config.getUploadCode(), outfiles);
-      } catch (IOException ioe) {
-        LOG.warn("Failed to upload results from the controller");
-      }
-    } else {
-      LOG.warn("Empty upload URL. Skipping upload...");
-    }
+
   }
 
   private static void printUsage(Options options) {

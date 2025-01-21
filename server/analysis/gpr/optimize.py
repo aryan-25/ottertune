@@ -24,8 +24,16 @@ class GPRGDResult():
         self.minl = minl
         self.minl_conf = minl_conf
 
+def distance_penalty(current_knob_config, selected_knob_configs, weight=0.5):
+    if selected_knob_configs.shape[0] == 0:
+        return 0
 
-def tf_optimize(model, Xnew_arr, learning_rate=0.01, maxiter=100, ucb_beta=3.,
+    distances = tf.norm(selected_knob_configs - current_knob_config, axis=1)
+    penalty = -weight * tf.reduce_sum(tf.exp(-distances))
+
+    return penalty
+
+def tf_optimize(model, selected_configs, Xnew_arr, learning_rate=0.01, maxiter=100, ucb_beta=3.,
                 active_dims=None, bounds=None, debug=True):
     Xnew_arr = check_array(Xnew_arr, copy=False, warn_on_dtype=True, dtype=FLOAT_DTYPES)
 
@@ -57,7 +65,7 @@ def tf_optimize(model, Xnew_arr, learning_rate=0.01, maxiter=100, ucb_beta=3.,
     y_mean = y_mean_var[0]
     y_var = y_mean_var[1]
     y_std = tf.sqrt(y_var)
-    loss = tf.subtract(y_mean, tf.multiply(beta_t, y_std), name='loss_fn')
+    loss = tf.add(tf.subtract(y_mean, tf.multiply(beta_t, y_std), name='loss_fn'), distance_penalty(Xin, selected_configs))
     opt = tf.train.AdamOptimizer(learning_rate, epsilon=1e-6)
     train_op = opt.minimize(loss)
     variables = opt.variables()

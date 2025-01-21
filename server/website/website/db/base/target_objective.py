@@ -72,6 +72,7 @@ class BaseThroughput(BaseTargetObjective):
             num_txns = sum(metrics[ctr] for ctr in self.transactions_counter)
         else:
             num_txns = metrics[self.transactions_counter]
+        print(f"The number of transactions are {num_txns} over {observation_time} seconds")
         return float(num_txns) / observation_time
 
 
