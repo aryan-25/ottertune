@@ -789,28 +789,8 @@ def loop(db_config: dict, i: int):
     if dconf.ENABLE_UDM is True:
         add_udm()
 
-    # save result
-    result_timestamp = save_dbms_result(db_config)
 
-    if i >= dconf.WARMUP_ITERATIONS:
-        # upload result
-        upload_response = upload_result(prefix=f"{db_config['id']}")
-
-        result_id = int(re.search(r'Result ID:(\d+)', upload_response).group(1))
-
-        # get result
-        response = get_result(result_id=result_id)
-
-        # save next config
-        save_next_config(response, db_config, t=result_timestamp)
-
-        print(f"The recommendation is: {response['recommendation']}")
-
-        # change config
-        change_conf(db_config, response['recommendation'])
-
-
-def loop_task(server_conf: dict, iteration_num: int):
+def main_task(server_conf: dict, iteration_num: int):
     # dump database if it's not done before.
     dump = dump_database(server_conf)
     reset_conf(server_conf, False)
@@ -845,15 +825,67 @@ def loop_task(server_conf: dict, iteration_num: int):
 
     LOG.info('The %s-th Loop Starts', iteration_num + 1)
     loop(server_conf, iteration_num % dconf.RELOAD_INTERVAL if dconf.RELOAD_INTERVAL > 0 else iteration_num)
-    LOG.info('The %s-th Loop Ends', iteration_num + 1)
 
+
+def upload(files: dict, upload_code: str):
+    response = requests.post(dconf.WEBSITE_URL + '/new_result/', files=files, data={'upload_code': upload_code})
+    if response.status_code != 200:
+        raise Exception('Error uploading result.\nStatus: {}\nMessage: {}\n'.format(
+            response.status_code, get_content(response)))
+
+    for f in files.values():  # pylint: disable=not-an-iterable
+        f.close()
+
+    upload_response = get_content(response)
+
+    LOG.info(upload_response)
+    result_id = int(re.search(r'Result ID:(\d+)', upload_response).group(1))
+
+    return result_id
+
+def process_result(upload_code: int, result_ids: list[int]):
+    response = requests.post(dconf.WEBSITE_URL + "/process_result/", data={
+        'upload_code': upload_code,
+        'result_ids': json.dumps(result_ids)
+    })
+    if response.status_code != 200:
+        raise Exception('Error uploading result.\nStatus: {}\nMessage: {}\n'.format(
+            response.status_code, get_content(response)))
+
+    upload_response = get_content(response)
+
+    LOG.info(upload_response)
+
+
+def process_recommendations(result_id):
+    response = get_result(result_id=result_id)
+
+    print(f"The response is: {response}")
+    print(f"The length of the next_config is: {len(response['next_config'])}")
+    for i, config in enumerate(response['next_config']):
+        print(f"The recommendation is: {config['recommendation']}")
+        change_conf(dconf.DB_SERVERS[i], config['recommendation'])
+
+
+def obtain_result_files(server_id: str):
+    result_dir = os.path.join(dconf.CONTROLLER_HOME, f"{server_id}_output")
+
+    files = {}
+    bases = ['summary', 'knobs', 'metrics_before', 'metrics_after']
+    if dconf.ENABLE_UDM:
+        bases.append('user_defined_metrics')
+    for base in bases:
+        fpath = os.path.join(result_dir, base + '.json')
+        files[base] = open(fpath, 'rb')
+
+    return files
 
 @task
 def run_loops(max_iter=100):
     for i in range(int(max_iter)):
         db_processes = []
         for db_config in dconf.DB_SERVERS:
-            p = Process(target=loop_task, args=(db_config, i))
+            p = Process(target=main_task, args=(db_config, i))
             p.start()
             db_processes.append(p)
 
@@ -861,6 +893,16 @@ def run_loops(max_iter=100):
             print(f"Joining process {p}")
             p.join()
             print(f"Joined process {p}")
+
+        result_ids = []
+        for db_config in dconf.DB_SERVERS:
+            files = obtain_result_files(db_config['id'])
+            result_ids.append(upload(files, dconf.UPLOAD_CODE))
+
+        print(f"Result IDs: {result_ids}")
+
+        process_result(dconf.UPLOAD_CODE, result_ids)
+        process_recommendations(max(result_ids))
 
 if __name__ == '__main__':
     run_loops(max_iter=sys.argv[1] if len(sys.argv) > 1 else 25)

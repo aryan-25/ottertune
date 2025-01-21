@@ -18,6 +18,12 @@ LOGIN_HOST = '172.236.3.134'
 LOGIN_PASSWORD = os.environ.get('LOGIN_PASSWORD', 'root')
 LOGIN_PORT = None  # Set when using a port other than the SSH default
 
+# Path to this driver
+DRIVER_HOME = os.path.dirname(os.path.realpath(__file__))
+
+# Path to the controller directory
+CONTROLLER_HOME = DRIVER_HOME + '/../controller'
+
 DB_SERVERS = [
     {
         'connection_type': 'remote',
@@ -25,10 +31,10 @@ DB_SERVERS = [
         'host': '172.236.3.134',
         'password': os.environ.get('LOGIN_PASSWORD', 'root'),
         'port': None,
-        'controller_config_file': '/Users/aryanshah/Developer/ottertune/ottertune/client/controller/config/1_postgres_config.json',
-        'oltpbench_config_file': '/Users/aryanshah/Developer/ottertune/ottertune/client/driver/1_tpcc_config_postgres.xml',
-        'controller_log_file': '/Users/aryanshah/Developer/ottertune/ottertune/client/driver/log/1_controller.log',
-        'oltpbench_log_file': '/Users/aryanshah/Developer/ottertune/ottertune/client/driver/log/1_oltpbench.log',
+        'controller_config_file': os.path.join(CONTROLLER_HOME, 'config/1_postgres_config.json'),
+        'oltpbench_config_file': os.path.join(DRIVER_HOME, '1_tpcc_config_postgres.xml'),
+        'controller_log_file': os.path.join(DRIVER_HOME, 'log/1_controller.log'),
+        'oltpbench_log_file': os.path.join(DRIVER_HOME, 'log/1_oltpbench.log'),
         'id': 1,
     },
     {
@@ -37,13 +43,14 @@ DB_SERVERS = [
         'host': '172.236.13.45',
         'password': os.environ.get('LOGIN_PASSWORD', 'root'),
         'port': None,
-        'controller_config_file': '/Users/aryanshah/Developer/ottertune/ottertune/client/controller/config/2_postgres_config.json',
-        'oltpbench_config_file': '/Users/aryanshah/Developer/ottertune/ottertune/client/driver/2_tpcc_config_postgres.xml',
-        'controller_log_file': '/Users/aryanshah/Developer/ottertune/ottertune/client/driver/log/2_controller.log',
-        'oltpbench_log_file': '/Users/aryanshah/Developer/ottertune/ottertune/client/driver/log/2_oltpbench.log',
+        'controller_config_file':  os.path.join(CONTROLLER_HOME, 'config/2_postgres_config.json'),
+        'oltpbench_config_file': os.path.join(DRIVER_HOME, '2_tpcc_config_postgres.xml'),
+        'controller_log_file': os.path.join(DRIVER_HOME, 'log/2_controller.log'),
+        'oltpbench_log_file': os.path.join(DRIVER_HOME, 'log/2_oltpbench.log'),
         'id': 2,
     }
 ]
+
 
 #==========================================================
 #  DATABASE OPTIONS
@@ -123,9 +130,6 @@ RECOVERY_FILE_DEST_SIZE = '15G'
 #  DRIVER OPTIONS
 #==========================================================
 
-# Path to this driver
-DRIVER_HOME = os.path.dirname(os.path.realpath(__file__))
-
 # Path to the directory for storing results
 RESULT_DIR = os.path.join(DRIVER_HOME, 'results')
 
@@ -183,9 +187,6 @@ OLTPBENCH_BENCH = 'tpcc'
 # monitoring if the time is specified
 CONTROLLER_OBSERVE_SEC = 100
 
-# Path to the controller directory
-CONTROLLER_HOME = DRIVER_HOME + '/../controller'
-
 # Path to the controller configuration file
 # CONTROLLER_CONFIG = os.path.join(CONTROLLER_HOME, 'config/{}_config.json'.format(DB_TYPE))
 
@@ -213,4 +214,4 @@ CONTROLLER_LOG = os.path.join(LOG_DIR, 'controller.log')
 WEBSITE_URL = 'http://127.0.0.1:8000'
 
 # Code for uploading new results to the website
-UPLOAD_CODE = 'UQ3TAVWQXRQX1GN1TSWL'
+UPLOAD_CODE = 'ITCB0AWHBSZXU8P04BPZ'
