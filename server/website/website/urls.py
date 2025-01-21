@@ -42,6 +42,7 @@ urlpatterns = [
 
     # URLs for result views
     url(r'^new_result/', website_views.new_result, name='new_result'),
+    url(r'^process_result/', website_views.process_result, name='process_result'),
     url(r'^projects/(?P<project_id>[0-9]+)/sessions/(?P<session_id>[0-9]+)/results/(?P<result_id>[0-9]+)/$', website_views.result_view, name='result'),
     url(r'^projects/(?P<project_id>[0-9]+)/sessions/(?P<session_id>[0-9]+)/workloads/(?P<wkld_id>[0-9]+)/$', website_views.workload_view, name='workload'),
     url(r'^projects/(?P<project_id>[0-9]+)/sessions/(?P<session_id>[0-9]+)/knobs/(?P<data_id>[0-9]+)/$', website_views.knob_data_view, name='knob_data'),
@@ -66,7 +67,7 @@ urlpatterns = [
     url(r'^static/(?P<path>.*)$', never_cache(serve)),
 
     # Back door
-    url(r'^query_and_get/(?P<upload_code>[0-9a-zA-Z]+)$', website_views.give_result, name="backdoor"),
+    url(r'^query_and_get/(?P<upload_code>[0-9a-zA-Z]+)/(?P<result_id>[0-9]+)$', website_views.give_result, name="backdoor"),
     url(r'^dump/(?P<upload_code>[0-9a-zA-Z]+)', website_views.get_debug_info, name="backdoor_debug"),
     url(r'^create/project/', website_views.alt_create_or_edit_project, name='backdoor_create_project'),
     url(r'^edit/project/', website_views.alt_create_or_edit_project, name='backdoor_edit_project'),

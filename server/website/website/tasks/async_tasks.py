@@ -9,6 +9,7 @@ import time
 import numpy as np
 import tensorflow as tf
 import gpflow
+import threading
 from pyDOE import lhs
 from scipy.stats import uniform
 from pytz import timezone
@@ -201,7 +202,7 @@ def calc_next_knob_range(algorithm, knob_info, newest_result, good_val, bad_val,
 
 
 @shared_task(base=IgnoreResultTask, name='preprocessing')
-def preprocessing(result_id, algorithm):
+def preprocessing(result_id, algorithm, num_configs):
     start_ts = time.time()
     target_data = {}
     target_data['newest_result_id'] = result_id
@@ -290,7 +291,8 @@ def preprocessing(result_id, algorithm):
             all_samples = gen_lhs_samples(knobs, num_lhs_samples)
             LOG.debug('%s: Generated %s LHS samples (LHS data: %s).', task_name, num_lhs_samples,
                       len(all_samples))
-        samples = all_samples.pop()
+        samples = all_samples[-num_configs:]
+        del all_samples[-num_configs:]
         target_data['status'] = 'lhs'
         target_data['config_recommend'] = samples
         session.lhs_samples = JSONUtil.dumps(all_samples)
@@ -300,13 +302,13 @@ def preprocessing(result_id, algorithm):
     exec_time = save_execution_time(start_ts, "preprocessing", newest_result)
     LOG.debug("\n%s: Result = %s\n", task_name, _task_result_tostring(target_data))
     LOG.info("%s: Done preprocessing data (%.1f seconds).", task_name, exec_time)
-    return result_id, algorithm, target_data
+    return result_id, algorithm, target_data, num_configs
 
 
 @shared_task(base=IgnoreResultTask, name='aggregate_target_results')
 def aggregate_target_results(aggregate_target_results_input):
     start_ts = time.time()
-    result_id, algorithm, target_data = aggregate_target_results_input
+    result_id, algorithm, target_data, num_configs = aggregate_target_results_input
     newest_result = Result.objects.get(pk=result_id)
     session = newest_result.session
     task_name = _get_task_name(session, result_id)
@@ -317,7 +319,7 @@ def aggregate_target_results(aggregate_target_results_input):
         LOG.debug("\n%s: Result = %s\n", task_name, _task_result_tostring(target_data))
         LOG.info('%s: Skipping aggregate_target_results (status=%s).', task_name,
                  target_data.get('status', ''))
-        return target_data, algorithm
+        return target_data, algorithm, num_configs
 
     LOG.info("%s: Aggregating target results...", task_name)
 
@@ -346,7 +348,7 @@ def aggregate_target_results(aggregate_target_results_input):
     exec_time = save_execution_time(start_ts, "aggregate_target_results", newest_result)
     LOG.debug("\n%s: Result = %s\n", task_name, _task_result_tostring(agg_data))
     LOG.info('%s: Finished aggregating target results (%.1f seconds).', task_name, exec_time)
-    return agg_data, algorithm
+    return agg_data, algorithm, num_configs
 
 
 def gen_random_data(knobs):
@@ -560,24 +562,28 @@ def train_ddpg(train_ddpg_input):
     return target_data, algorithm
 
 
-def create_and_save_recommendation(recommended_knobs, result, status, **kwargs):
-    dbms_id = result.dbms.pk
-    formatted_knobs = db.parser.format_dbms_knobs(dbms_id, recommended_knobs)
-    config = db.parser.create_knob_configuration(dbms_id, formatted_knobs)
-    knob_names = recommended_knobs.keys()
-    knobs = KnobCatalog.objects.filter(name__in=knob_names)
-    knob_contexts = {knob.clean_name: knob.context for knob in knobs}
-    retval = dict(**kwargs)
-    retval.update(
-        status=status,
-        result_id=result.pk,
-        recommendation=config,
-        context=knob_contexts
-    )
-    result.next_configuration = JSONUtil.dumps(retval)
+def create_and_save_recommendation(recommended_knobs_list, result, status, **kwargs):
+    retvals = []
+    for recommended_knobs in recommended_knobs_list:
+        dbms_id = result.dbms.pk
+        formatted_knobs = db.parser.format_dbms_knobs(dbms_id, recommended_knobs)
+        config = db.parser.create_knob_configuration(dbms_id, formatted_knobs)
+        knob_names = recommended_knobs.keys()
+        knobs = KnobCatalog.objects.filter(name__in=knob_names)
+        knob_contexts = {knob.clean_name: knob.context for knob in knobs}
+        retval = dict(**kwargs)
+        retval.update(
+            status=status,
+            result_id=result.pk,
+            recommendation=config,
+            context=knob_contexts
+        )
+        retvals.append(retval)
+
+    result.next_configuration = JSONUtil.dumps(retvals)
     result.save()
 
-    return retval
+    return retvals
 
 
 def check_early_return(target_data, algorithm):
@@ -593,11 +599,12 @@ def check_early_return(target_data, algorithm):
         else:
             info = 'Unknown.'
         info += ' ' + target_data.get('debug', '')
+        print(f"Creating and saving recommendation: {target_data['config_recommend']}")
         target_data_res = create_and_save_recommendation(
-            recommended_knobs=target_data['config_recommend'], result=newest_result,
+            recommended_knobs_list=target_data['config_recommend'], result=newest_result,
             status=target_data['status'], info=info, pipeline_run=None)
         LOG.debug('%s: Skipping configuration recommendation (status=%s).',
-                  _get_task_name(newest_result.session, result_id), target_data_res['status'])
+                  _get_task_name(newest_result.session, result_id), target_data_res[0]['status'])
         return True, target_data_res
     return False, None
 
@@ -837,11 +844,39 @@ def process_training_data(target_data):
     return X_columnlabels, X_scaler, X_scaled, y_scaled, X_max, X_min,\
         dummy_encoder, constraint_helper, pipeline_data_knob, pipeline_data_metric
 
+def generate_candidate_configurations(num_samples, X_scaled, X_max, X_min, y_scaled, top_num_config, epsilon):
+    X_samples = np.empty((num_samples, X_scaled.shape[1]))
+    for i in range(X_scaled.shape[1]):
+        X_samples[:, i] = np.random.rand(num_samples) * (X_max[i] - X_min[i]) + X_min[i]
+
+    q = queue.PriorityQueue()
+    for x in range(0, y_scaled.shape[0]):
+        q.put((y_scaled[x][0], x))
+
+    i = 0
+    while i < top_num_config:
+        try:
+            item = q.get_nowait()
+            # Tensorflow get broken if we use the training data points as
+            # starting points for GPRGD. We add a small bias for the
+            # starting points. GPR_EPS default value is 0.001
+            # if the starting point is X_max, we minus a small bias to
+            # make sure it is within the range.
+            dist = sum(np.square(X_max - X_scaled[item[1]]))
+            if dist < 0.001:
+                X_samples = np.vstack((X_samples, X_scaled[item[1]] - abs(epsilon)))
+            else:
+                X_samples = np.vstack((X_samples, X_scaled[item[1]] + abs(epsilon)))
+            i = i + 1
+        except queue.Empty:
+            break
+    
+    return X_samples, i
 
 @shared_task(base=ConfigurationRecommendation, name='configuration_recommendation')
 def configuration_recommendation(recommendation_input):
     start_ts = time.time()
-    target_data, algorithm = recommendation_input
+    target_data, algorithm, num_configs = recommendation_input
     newest_result = Result.objects.get(pk=target_data['newest_result_id'])
     session = newest_result.session
     task_name = _get_task_name(session, target_data['newest_result_id'])
@@ -859,33 +894,7 @@ def configuration_recommendation(recommendation_input):
         dummy_encoder, constraint_helper, pipeline_knobs,\
         pipeline_metrics = process_training_data(target_data)
 
-    # FIXME: we should generate more samples and use a smarter sampling technique
-    num_samples = params['NUM_SAMPLES']
-    X_samples = np.empty((num_samples, X_scaled.shape[1]))
-    for i in range(X_scaled.shape[1]):
-        X_samples[:, i] = np.random.rand(num_samples) * (X_max[i] - X_min[i]) + X_min[i]
-
-    q = queue.PriorityQueue()
-    for x in range(0, y_scaled.shape[0]):
-        q.put((y_scaled[x][0], x))
-
-    i = 0
-    while i < params['TOP_NUM_CONFIG']:
-        try:
-            item = q.get_nowait()
-            # Tensorflow get broken if we use the training data points as
-            # starting points for GPRGD. We add a small bias for the
-            # starting points. GPR_EPS default value is 0.001
-            # if the starting point is X_max, we minus a small bias to
-            # make sure it is within the range.
-            dist = sum(np.square(X_max - X_scaled[item[1]]))
-            if dist < 0.001:
-                X_samples = np.vstack((X_samples, X_scaled[item[1]] - abs(params['GPR_EPS'])))
-            else:
-                X_samples = np.vstack((X_samples, X_scaled[item[1]] + abs(params['GPR_EPS'])))
-            i = i + 1
-        except queue.Empty:
-            break
+    X_samples, i = generate_candidate_configurations(params['NUM_SAMPLES'], X_scaled, X_max, X_min, y_scaled, params['TOP_NUM_CONFIG'], params['GPR_EPS'])
 
     res = None
     info_msg = 'INFO: training data size is {}. '.format(X_scaled.shape[0])
@@ -911,48 +920,49 @@ def configuration_recommendation(recommendation_input):
     elif algorithm == AlgorithmType.GPR:
         info_msg += 'Recommended by GPR.'
         # default gpr model
-        if params['GPR_USE_GPFLOW']:
-            LOG.debug("%s: Running GPR with GPFLOW.", task_name)
-            model_kwargs = {}
-            model_kwargs['model_learning_rate'] = params['GPR_HP_LEARNING_RATE']
-            model_kwargs['model_maxiter'] = params['GPR_HP_MAX_ITER']
-            opt_kwargs = {}
-            opt_kwargs['learning_rate'] = params['GPR_LEARNING_RATE']
-            opt_kwargs['maxiter'] = params['GPR_MAX_ITER']
-            opt_kwargs['bounds'] = [X_min, X_max]
-            opt_kwargs['debug'] = params['GPR_DEBUG']
-            opt_kwargs['ucb_beta'] = ucb.get_ucb_beta(params['GPR_UCB_BETA'],
-                                                      scale=params['GPR_UCB_SCALE'],
-                                                      t=i + 1., ndim=X_scaled.shape[1])
-            tf.reset_default_graph()
-            graph = tf.get_default_graph()
-            gpflow.reset_default_session(graph=graph)
-            m = gpr_models.create_model(params['GPR_MODEL_NAME'], X=X_scaled, y=y_scaled,
-                                        **model_kwargs)
-            res = tf_optimize(m.model, X_samples, **opt_kwargs)
-        else:
-            LOG.debug("%s: Running GPR with GPRGD.", task_name)
-            model = GPRGD(length_scale=params['GPR_LENGTH_SCALE'],
-                          magnitude=params['GPR_MAGNITUDE'],
-                          max_train_size=params['GPR_MAX_TRAIN_SIZE'],
-                          batch_size=params['GPR_BATCH_SIZE'],
-                          num_threads=params['TF_NUM_THREADS'],
-                          learning_rate=params['GPR_LEARNING_RATE'],
-                          epsilon=params['GPR_EPSILON'],
-                          max_iter=params['GPR_MAX_ITER'],
-                          sigma_multiplier=params['GPR_SIGMA_MULTIPLIER'],
-                          mu_multiplier=params['GPR_MU_MULTIPLIER'],
-                          ridge=params['GPR_RIDGE'])
-            model.fit(X_scaled, y_scaled, X_min, X_max)
-            res = model.predict(X_samples, constraint_helper=constraint_helper)
+        LOG.debug("%s: Running GPR with GPFLOW.", task_name)
+        model_kwargs = {}
+        model_kwargs['model_learning_rate'] = params['GPR_HP_LEARNING_RATE']
+        model_kwargs['model_maxiter'] = params['GPR_HP_MAX_ITER']
+        opt_kwargs = {}
+        opt_kwargs['learning_rate'] = params['GPR_LEARNING_RATE']
+        opt_kwargs['maxiter'] = params['GPR_MAX_ITER']
+        opt_kwargs['bounds'] = [X_min, X_max]
+        opt_kwargs['debug'] = params['GPR_DEBUG']
+        opt_kwargs['ucb_beta'] = ucb.get_ucb_beta(params['GPR_UCB_BETA'],
+                                                    scale=params['GPR_UCB_SCALE'],
+                                                    t=i + 1., ndim=X_scaled.shape[1])
 
-    best_config_idx = np.argmin(res.minl.ravel())
-    best_config = res.minl_conf[best_config_idx, :]
-    best_config = X_scaler.inverse_transform(best_config)
+        thread_local_data = threading.local()
+        thread_local_data.graph = tf.Graph()
+        with thread_local_data.graph.as_default():
+            gpflow.reset_default_session(graph=thread_local_data.graph)
+            thread_local_data.session = gpflow.get_default_session()
+
+            with thread_local_data.session.as_default():
+                best_configs = np.empty((0, X_scaled.shape[1]))
+                for j in range(num_configs):
+                    m = gpr_models.create_model(
+                        params['GPR_MODEL_NAME'], X=X_scaled, y=y_scaled, **model_kwargs
+                    )
+                    X_samples, _ = generate_candidate_configurations(params['NUM_SAMPLES'], X_scaled, X_max, X_min, y_scaled, params['TOP_NUM_CONFIG'], params['GPR_EPS'])
+
+                    print(f"Running GPR for the {j}th time")
+                    res = tf_optimize(m.model, best_configs, X_samples, **opt_kwargs)
+
+                    best_config_idx = np.argmin(res.minl.ravel())
+                    best_config = res.minl_conf[best_config_idx]
+                    best_config = X_scaler.inverse_transform(best_config)
+
+                    print(f"Best config = {best_config}, shape = {best_config.shape}")
+
+                    best_configs = np.append(best_configs, best_config.reshape((1, X_scaled.shape[1])), axis=0)
+
+                    print(f"Best configs shape = {best_configs.shape}")
 
     if ENABLE_DUMMY_ENCODER:
         # Decode one-hot encoding into categorical knobs
-        best_config = dummy_encoder.inverse_transform(best_config)
+        best_configs = dummy_encoder.inverse_transform(best_configs)
 
     # Although we have max/min limits in the GPRGD training session, it may
     # lose some precisions. e.g. 0.99..99 >= 1.0 may be True on the scaled data,
@@ -961,15 +971,21 @@ def configuration_recommendation(recommendation_input):
     # directly, and make sure the recommended config lies within the range
     X_min_inv = X_scaler.inverse_transform(X_min)
     X_max_inv = X_scaler.inverse_transform(X_max)
-    best_config = np.minimum(best_config, X_max_inv)
-    best_config = np.maximum(best_config, X_min_inv)
+    
+    processed_configs = np.empty_like(best_configs)
+    for i, best_config in enumerate(best_configs):
+        processed_config = np.minimum(best_config, X_max_inv)
+        processed_config = np.maximum(processed_config, X_min_inv)
+        processed_configs[i] = processed_config
 
-    conf_map = {k: best_config[i] for i, k in enumerate(X_columnlabels)}
+    conf_map = [ {k: processed_configs[i][j] for j, k in enumerate(X_columnlabels)} for i in range(num_configs) ]
     newest_result.pipeline_knobs = pipeline_knobs
     newest_result.pipeline_metrics = pipeline_metrics
 
+    LOG.info(f"The conf_map is {conf_map}")
+
     conf_map_res = create_and_save_recommendation(
-        recommended_knobs=conf_map, result=newest_result,
+        recommended_knobs_list=conf_map, result=newest_result,
         status='good', info=info_msg, pipeline_run=target_data['pipeline_run'])
 
     exec_time = save_execution_time(start_ts, "configuration_recommendation", newest_result)
@@ -990,7 +1006,7 @@ def load_data_helper(filtered_pipeline_data, workload, task_type):
 @shared_task(base=MapWorkloadTask, name='map_workload')
 def map_workload(map_workload_input):
     start_ts = time.time()
-    target_data, algorithm = map_workload_input
+    target_data, algorithm, num_configs = map_workload_input
     newest_result = Result.objects.get(pk=target_data['newest_result_id'])
     session = newest_result.session
     task_name = _get_task_name(session, target_data['newest_result_id'])
@@ -999,7 +1015,7 @@ def map_workload(map_workload_input):
     if target_data['status'] != 'good':
         LOG.debug('\n%s: Result = %s\n', task_name, _task_result_tostring(target_data))
         LOG.info("%s: Skipping workload mapping (status: %s).", task_name, target_data['status'])
-        return target_data, algorithm
+        return target_data, algorithm, num_configs
 
     # Get the latest version of pipeline data that's been computed so far.
     latest_pipeline_run = PipelineRun.objects.get_latest()
@@ -1084,7 +1100,7 @@ def map_workload(map_workload_input):
         LOG.debug('%s: Result = %s\n', task_name, _task_result_tostring(target_data))
         LOG.info('%s: Skipping workload mapping because no different workload is available.',
                  task_name)
-        return target_data, algorithm
+        return target_data, algorithm, num_configs
 
     # Stack all X & y matrices for preprocessing
     Xs = np.vstack([entry['X_matrix'] for entry in list(workload_data.values())])
@@ -1126,12 +1142,18 @@ def map_workload(map_workload_input):
                 model_kwargs = {'lengthscales': params['GPR_LENGTH_SCALE'],
                                 'variance': params['GPR_MAGNITUDE'],
                                 'noise_variance': params['GPR_RIDGE']}
-                tf.reset_default_graph()
-                graph = tf.get_default_graph()
-                gpflow.reset_default_session(graph=graph)
-                m = gpr_models.create_model(params['GPR_MODEL_NAME'], X=X_scaled, y=y_col,
-                                            **model_kwargs)
-                gpr_result = gpflow_predict(m.model, X_target)
+                
+                thread_local_data = threading.local()
+                thread_local_data.graph = tf.Graph()
+
+                with thread_local_data.graph.as_default():
+                    gpflow.reset_default_session(graph=thread_local_data.graph)
+                    thread_local_data.session = gpflow.get_default_session()
+
+                    with thread_local_data.session.as_default():
+                        m = gpr_models.create_model(params['GPR_MODEL_NAME'], X=X_scaled, y=y_col,
+                                                    **model_kwargs)
+                        gpr_result = gpflow_predict(m.model, X_target)
             else:
                 model = GPRNP(length_scale=params['GPR_LENGTH_SCALE'],
                               magnitude=params['GPR_MAGNITUDE'],
@@ -1166,4 +1188,4 @@ def map_workload(map_workload_input):
     LOG.debug('\n%s: Result = %s\n', task_name, _task_result_tostring(target_data))
     LOG.info('%s: Done mapping the workload (%.1f seconds).', task_name, exec_time)
 
-    return target_data, algorithm
+    return target_data, algorithm, num_configs
